@@ -1,0 +1,40 @@
+{
+  "timestamp": "2026-09-27T13:38:42.151663",
+  "baseline_sample_size": 253680,
+  "current_batch_size": 5000,
+  "features_monitored": 6,
+  "features_drifted": 2,
+  "system_status": "ALERT: Retraining Recommended",
+  "feature_details": {
+    "BMI": {
+      "statistic": 0.3092,
+      "p_value": 0.0,
+      "drift_detected": true
+    },
+    "HighBP": {
+      "statistic": 0.322,
+      "p_value": 0.0,
+      "drift_detected": true
+    },
+    "HighChol": {
+      "statistic": 0.0009,
+      "p_value": 1.0,
+      "drift_detected": false
+    },
+    "GenHlth": {
+      "statistic": 0.0115,
+      "p_value": 0.53569,
+      "drift_detected": false
+    },
+    "PhysActivity": {
+      "statistic": 0.0141,
+      "p_value": 0.28462,
+      "drift_detected": false
+    },
+    "Age": {
+      "statistic": 0.011,
+      "p_value": 0.59433,
+      "drift_detected": false
+    }
+  }
+}
