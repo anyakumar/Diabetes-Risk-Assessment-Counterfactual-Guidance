@@ -159,4 +159,4 @@ docker compose up --build
 
 ## 👩‍💻 Author
 **Anya Kumar**  
-B.Tech in Computer Science & Engineering (AI/ML Specialization)  
+B.Tech in Computer Science & Engineering (AI/ML Specialization)
