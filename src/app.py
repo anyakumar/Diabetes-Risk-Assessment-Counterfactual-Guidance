@@ -1,5 +1,7 @@
+import io
 import os
 import sys
+import uuid
 import datetime
 import joblib
 import pandas as pd
@@ -243,7 +245,9 @@ st.markdown(f"""
 tabs = st.tabs([
     "Patient Triage & Risk Assessment",
     "Counterfactual Lifestyle Simulation",
-    "Model Explainability & Clinical Drivers"
+    "Model Explainability & Clinical Drivers",
+    "Batch Cohort Screening",
+    "EHR Consultation Note"
 ])
 
 # ================= TAB 1: PATIENT TRIAGE =================
@@ -505,4 +509,316 @@ with tabs[2]:
         </div>
     </div>
     """, unsafe_allow_html=True)
+    st.markdown('</div>', unsafe_allow_html=True)
+
+# ================= BATCH TRIAGE HELPERS =================
+
+def build_patient_dict_from_row(row: pd.Series) -> dict:
+    """Map CSV column names to model feature names with safe defaults."""
+    return {
+        "HighBP":              int(row.get("HighBP", 0)),
+        "HighChol":            int(row.get("HighChol", 0)),
+        "CholCheck":           int(row.get("CholCheck", 1)),
+        "BMI":                 float(row.get("BMI", 25.0)),
+        "Smoker":              int(row.get("Smoker", 0)),
+        "Stroke":              int(row.get("Stroke", 0)),
+        "HeartDiseaseorAttack":int(row.get("HeartDiseaseorAttack", 0)),
+        "PhysActivity":        int(row.get("PhysActivity", 1)),
+        "Fruits":              int(row.get("Fruits", 1)),
+        "Veggies":             int(row.get("Veggies", 1)),
+        "HvyAlcoholConsump":   int(row.get("HvyAlcoholConsump", 0)),
+        "AnyHealthcare":       int(row.get("AnyHealthcare", 1)),
+        "NoDocbcCost":         int(row.get("NoDocbcCost", 0)),
+        "GenHlth":             int(row.get("GenHlth", 3)),
+        "MentHlth":            int(row.get("MentHlth", 0)),
+        "PhysHlth":            int(row.get("PhysHlth", 0)),
+        "DiffWalk":            int(row.get("DiffWalk", 0)),
+        "Sex":                 int(row.get("Sex", 0)),
+        "Age":                 int(row.get("Age", 7)),
+        "Education":           int(row.get("Education", 4)),
+        "Income":              int(row.get("Income", 5)),
+    }
+
+def tier_from_prob(prob: float) -> str:
+    if prob < 0.25:   return "Low Risk"
+    if prob < 0.55:   return "Moderate Risk"
+    return "High Risk"
+
+def row_color(tier: str) -> str:
+    return {"Low Risk": "#ECFDF5", "Moderate Risk": "#FFFBEB", "High Risk": "#FEF2F2"}.get(tier, "#FFFFFF")
+
+# ================= TAB 4: BATCH COHORT SCREENING =================
+with tabs[3]:
+    st.markdown('<div class="clinical-card">', unsafe_allow_html=True)
+    st.markdown('<div class="card-header">Batch Cohort Screening — CSV Upload</div>', unsafe_allow_html=True)
+    st.markdown("""
+    <p style="color: #475569; font-size: 0.9rem; margin-bottom: 1rem;">
+        Upload a patient cohort CSV containing any subset of the 21 clinical indicators.
+        The engine scores each record, assigns a risk tier, and produces a downloadable
+        triage report with flagged high-risk cases highlighted.
+    </p>
+    """, unsafe_allow_html=True)
+
+    # Sample template download
+    sample_data = pd.DataFrame([{
+        "HighBP": 1, "HighChol": 1, "CholCheck": 1, "BMI": 32.4, "Smoker": 1,
+        "Stroke": 0, "HeartDiseaseorAttack": 0, "PhysActivity": 0, "Fruits": 1,
+        "Veggies": 1, "HvyAlcoholConsump": 0, "AnyHealthcare": 1, "NoDocbcCost": 0,
+        "GenHlth": 4, "MentHlth": 5, "PhysHlth": 10, "DiffWalk": 1, "Sex": 1,
+        "Age": 9, "Education": 4, "Income": 5
+    }, {
+        "HighBP": 0, "HighChol": 0, "CholCheck": 1, "BMI": 21.8, "Smoker": 0,
+        "Stroke": 0, "HeartDiseaseorAttack": 0, "PhysActivity": 1, "Fruits": 1,
+        "Veggies": 1, "HvyAlcoholConsump": 0, "AnyHealthcare": 1, "NoDocbcCost": 0,
+        "GenHlth": 2, "MentHlth": 0, "PhysHlth": 0, "DiffWalk": 0, "Sex": 0,
+        "Age": 4, "Education": 5, "Income": 7
+    }])
+    template_csv = sample_data.to_csv(index=False).encode("utf-8")
+    st.download_button(
+        label="Download CSV Template",
+        data=template_csv,
+        file_name="diaguard_batch_template.csv",
+        mime="text/csv"
+    )
+
+    st.divider()
+    uploaded_file = st.file_uploader("Upload Patient Cohort CSV", type=["csv"])
+
+    if uploaded_file is not None:
+        try:
+            cohort_df = pd.read_csv(uploaded_file)
+            st.success(f"Loaded {len(cohort_df):,} patient records successfully.")
+
+            # Score all rows
+            records = []
+            for idx, row in cohort_df.iterrows():
+                p = build_patient_dict_from_row(row)
+                df_row = pd.DataFrame([p])[feature_names]
+                prob = float(model.predict_proba(df_row)[0, 1])
+                tier = tier_from_prob(prob)
+                records.append({
+                    "Record #":        idx + 1,
+                    "Risk Score (%)":  round(prob * 100, 1),
+                    "Risk Tier":       tier,
+                    "BMI":             p["BMI"],
+                    "High BP":         "Yes" if p["HighBP"] else "No",
+                    "High Cholesterol":    "Yes" if p["HighChol"] else "No",
+                    "Physically Active":   "Yes" if p["PhysActivity"] else "No",
+                    "Smoker":          "Yes" if p["Smoker"] else "No",
+                })
+
+            results_df = pd.DataFrame(records).sort_values("Risk Score (%)", ascending=False)
+
+            # Summary metrics
+            n_high     = (results_df["Risk Tier"] == "High Risk").sum()
+            n_moderate = (results_df["Risk Tier"] == "Moderate Risk").sum()
+            n_low      = (results_df["Risk Tier"] == "Low Risk").sum()
+
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Total Patients",   f"{len(results_df):,}")
+            m2.metric("High Risk",        str(n_high),     delta=f"{n_high/len(results_df)*100:.1f}% of cohort", delta_color="inverse")
+            m3.metric("Moderate Risk",    str(n_moderate))
+            m4.metric("Low Risk",         str(n_low))
+
+            st.markdown("#### Triage Results — Sorted by Risk Score")
+
+            # Colour-coded table via HTML
+            rows_html = ""
+            for _, r in results_df.iterrows():
+                bg = row_color(r["Risk Tier"])
+                tier_bold = f"<strong>{r['Risk Tier']}</strong>"
+                rows_html += f"""
+                <tr style="background-color:{bg};">
+                    <td style="padding:0.45rem 0.75rem;">{r['Record #']}</td>
+                    <td style="padding:0.45rem 0.75rem; font-weight:600;">{r['Risk Score (%)']:.1f}%</td>
+                    <td style="padding:0.45rem 0.75rem;">{tier_bold}</td>
+                    <td style="padding:0.45rem 0.75rem;">{r['BMI']}</td>
+                    <td style="padding:0.45rem 0.75rem;">{r['High BP']}</td>
+                    <td style="padding:0.45rem 0.75rem;">{r['High Cholesterol']}</td>
+                    <td style="padding:0.45rem 0.75rem;">{r['Physically Active']}</td>
+                    <td style="padding:0.45rem 0.75rem;">{r['Smoker']}</td>
+                </tr>"""
+
+            table_html = f"""
+            <div style="overflow-x: auto;">
+            <table style="width:100%; border-collapse: collapse; font-size: 0.875rem; border: 1px solid #E2E8F0; border-radius: 6px; overflow: hidden;">
+                <thead>
+                    <tr style="background-color: #F1F5F9; color: #334155;">
+                        <th style="padding:0.5rem 0.75rem; text-align:left;">Record</th>
+                        <th style="padding:0.5rem 0.75rem; text-align:left;">Risk Score</th>
+                        <th style="padding:0.5rem 0.75rem; text-align:left;">Risk Tier</th>
+                        <th style="padding:0.5rem 0.75rem; text-align:left;">BMI</th>
+                        <th style="padding:0.5rem 0.75rem; text-align:left;">High BP</th>
+                        <th style="padding:0.5rem 0.75rem; text-align:left;">High Cholesterol</th>
+                        <th style="padding:0.5rem 0.75rem; text-align:left;">Active</th>
+                        <th style="padding:0.5rem 0.75rem; text-align:left;">Smoker</th>
+                    </tr>
+                </thead>
+                <tbody>{rows_html}</tbody>
+            </table>
+            </div>"""
+            st.markdown(table_html, unsafe_allow_html=True)
+
+            # Export triage report
+            st.markdown("<div style='margin-top: 1rem;'></div>", unsafe_allow_html=True)
+            export_csv = results_df.to_csv(index=False).encode("utf-8")
+            st.download_button(
+                label="Download Triage Report (CSV)",
+                data=export_csv,
+                file_name=f"diaguard_triage_{datetime.date.today().isoformat()}.csv",
+                mime="text/csv"
+            )
+
+        except Exception as e:
+            st.error(f"Failed to process file: {e}")
+    else:
+        st.markdown("""
+        <div style="text-align: center; padding: 2.5rem 1rem; background-color: #F8FAFC; border: 1px dashed #CBD5E1; border-radius: 8px; color: #94A3B8;">
+            <div style="font-size: 0.95rem; font-weight: 500;">No file uploaded yet</div>
+            <div style="font-size: 0.85rem; margin-top: 0.35rem;">Download the CSV template above, populate it with patient data, and upload it here.</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    st.markdown('</div>', unsafe_allow_html=True)
+
+# ================= TAB 5: EHR CONSULTATION NOTE =================
+with tabs[4]:
+    st.markdown('<div class="clinical-card">', unsafe_allow_html=True)
+    st.markdown('<div class="card-header">EHR Consultation Note Generator</div>', unsafe_allow_html=True)
+    st.markdown("""
+    <p style="color: #475569; font-size: 0.9rem; margin-bottom: 1rem;">
+        Generates a structured clinical consultation note for the active patient assessment
+        (from Tab 1). The output is formatted for direct copy-paste into EHR systems such as Epic,
+        Cerner, or any structured clinical documentation platform.
+    </p>
+    """, unsafe_allow_html=True)
+
+    # Build active patient summary from current session
+    case_id    = str(uuid.uuid4())[:8].upper()
+    timestamp  = datetime.datetime.now().strftime("%B %d, %Y  %H:%M")
+    risk_label = tier_from_prob(risk_prob)
+
+    active_flags_lines = []
+    if high_bp_val == 1:
+        active_flags_lines.append("  - Hypertension (Diagnosed)")
+    if high_chol_val == 1:
+        active_flags_lines.append("  - Dyslipidemia / High Cholesterol (Diagnosed)")
+    if bmi_input >= 30.0:
+        active_flags_lines.append(f"  - Obesity Class I/II  (BMI {bmi_input:.1f})")
+    elif bmi_input >= 25.0:
+        active_flags_lines.append(f"  - Overweight  (BMI {bmi_input:.1f})")
+    if phys_act_val == 0:
+        active_flags_lines.append("  - Physical Inactivity (< 150 mins/week)")
+    if smoker_val == 1:
+        active_flags_lines.append("  - Tobacco Consumption History (> 100 cigarettes lifetime)")
+    if diff_walk_val == 1:
+        active_flags_lines.append("  - Functional Mobility Limitation (Difficulty Walking)")
+    if not active_flags_lines:
+        active_flags_lines.append("  - No major cardiovascular or metabolic flags identified")
+
+    if risk_prob < 0.25:
+        rec_protocol = (
+            "Standard preventative metabolic screening every 3 years. "
+            "Reinforce dietary balance and maintenance of current physical activity. "
+            "No immediate laboratory workup indicated."
+        )
+    elif risk_prob < 0.55:
+        rec_protocol = (
+            "Order Fasting Blood Glucose (FBG) and HbA1c laboratory panel within 30 days. "
+            "Refer patient to registered dietitian for Medical Nutrition Therapy (MNT). "
+            "Prescribe structured aerobic exercise programme (150 mins/week moderate intensity). "
+            "Schedule 6-month follow-up for repeat metabolic assessment."
+        )
+    else:
+        rec_protocol = (
+            "Order comprehensive metabolic panel (CMP), Fasting Blood Glucose, and HbA1c immediately. "
+            "Consider 2-hour oral glucose tolerance test (OGTT) if initial results are borderline. "
+            "Initiate CDC-recognised Diabetes Prevention Programme (DPP) referral. "
+            "Evaluate antihypertensive therapy adjustment if BP remains uncontrolled. "
+            "Schedule endocrinology consultation and 3-month follow-up."
+        )
+
+    flags_block = "\n".join(active_flags_lines)
+
+    note = f"""================================================================================
+  CLINICAL RISK CONSULTATION NOTE  —  DiaGuard CDS Platform v1.0
+================================================================================
+
+  Case Reference ID  : DG-{case_id}
+  Assessment Date    : {timestamp}
+  Attending Provider : [Clinician Name / Registration No.]
+  Facility           : [Hospital / Clinic Name]
+
+────────────────────────────────────────────────────────────────────────────────
+  SECTION 1 — PATIENT DEMOGRAPHICS
+────────────────────────────────────────────────────────────────────────────────
+
+  Age Category       : {age_label}
+  Biological Sex     : {sex_label}
+  BMI                : {bmi_input:.1f}  kg/m²
+  General Health     : {gen_hlth_label}
+
+────────────────────────────────────────────────────────────────────────────────
+  SECTION 2 — AI-ASSISTED RISK STRATIFICATION
+────────────────────────────────────────────────────────────────────────────────
+
+  Algorithm          : XGBoost Gradient Boosting Classifier
+  Training Cohort    : CDC BRFSS (n = 253,680 patient encounters)
+  Validation AUC     : 0.8272  |  Clinical Sensitivity: 79.59%
+
+  Predicted Risk Probability   : {risk_prob * 100:.1f}%
+  Clinical Risk Tier           : {risk_label.upper()}
+
+────────────────────────────────────────────────────────────────────────────────
+  SECTION 3 — IDENTIFIED CLINICAL RISK DRIVERS
+────────────────────────────────────────────────────────────────────────────────
+
+{flags_block}
+
+────────────────────────────────────────────────────────────────────────────────
+  SECTION 4 — RECOMMENDED CLINICAL ACTION PROTOCOL
+────────────────────────────────────────────────────────────────────────────────
+
+  {rec_protocol}
+
+────────────────────────────────────────────────────────────────────────────────
+  SECTION 5 — CLINICIAN ATTESTATION
+────────────────────────────────────────────────────────────────────────────────
+
+  This AI-generated risk stratification is intended as clinical decision
+  support only. It does not constitute a definitive medical diagnosis.
+  Final clinical judgement rests with the attending licensed practitioner.
+
+  Clinician Signature : ______________________________
+  Date                : ______________________________
+  Licence / Reg. No.  : ______________________________
+
+================================================================================
+"""
+
+    st.markdown("#### Live Preview")
+    st.code(note, language=None)
+
+    st.markdown("<div style='margin-top: 0.75rem;'></div>", unsafe_allow_html=True)
+
+    dl_col1, dl_col2 = st.columns(2)
+    with dl_col1:
+        st.download_button(
+            label="Download Note (.txt)",
+            data=note.encode("utf-8"),
+            file_name=f"DiaGuard_EHR_Note_DG-{case_id}.txt",
+            mime="text/plain"
+        )
+    with dl_col2:
+        st.download_button(
+            label="Download Note (.md)",
+            data=note.encode("utf-8"),
+            file_name=f"DiaGuard_EHR_Note_DG-{case_id}.md",
+            mime="text/markdown"
+        )
+
+    st.caption(
+        "Note: Re-run the patient assessment in Tab 1 to refresh this note "
+        "for a different patient profile."
+    )
     st.markdown('</div>', unsafe_allow_html=True)
