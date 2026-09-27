@@ -1,4 +1,4 @@
-# 🛡️ DiaGuard: Diabetes Risk Assessment & Counterfactual Guidance
+# DiaGuard: Diabetes Risk Assessment & Counterfactual Guidance
 
 [![Python](https://img.shields.io/badge/Python-3.11-3776AB?logo=python&logoColor=white)](https://python.org)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.110+-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
